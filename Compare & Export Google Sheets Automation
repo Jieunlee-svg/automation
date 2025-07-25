@@ -1,0 +1,121 @@
+function compareLatestEventFiles() {
+  const folderName = '01. 서비스 기획/9-1. 백데이터/이벤트/건강습관3주챌린지';
+  const filePrefix = '이벤트 당첨자 리스트_2025';
+
+  // 1. 폴더 찾기
+  const folders = DriveApp.getFoldersByName(folderName.split('/').pop());
+  if (!folders.hasNext()) {
+    Logger.log('지정한 폴더를 찾을 수 없습니다.');
+    return;
+  }
+  const folder = folders.next();
+
+  // 2. 파일 필터링 및 정렬
+  const files = [];
+  const iter = folder.getFiles();
+  while (iter.hasNext()) {
+    const file = iter.next();
+    if (file.getName().startsWith(filePrefix)) {
+      const dateStr = file.getName().replace(filePrefix, '').replace(/[^0-9]/g, '');
+      if (dateStr.length === 4) {
+        const fullDate = '2025' + dateStr; // 예: 0615 → 20250615
+        files.push({ file, date: fullDate });
+      }
+    }
+  }
+
+  if (files.length < 2) {
+    Logger.log('비교할 수 있는 두 개의 파일이 없습니다.');
+    return;
+  }
+
+  // 날짜 기준 정렬 (내림차순)
+  files.sort((a, b) => b.date.localeCompare(a.date));
+  const [latest, previous] = files.slice(0, 2);
+
+  const latestData = readSheetData(latest.file);
+  const previousData = readSheetData(previous.file);
+
+  // 헤더와 데이터 분리
+  const [header, ...latestRows] = latestData;
+  const [, ...previousRows] = previousData;
+
+  // JSON으로 비교를 쉽게
+  const prevJSON = previousRows.map(row => row.join('|'));
+  let newRows = latestRows.filter(row => !prevJSON.includes(row.join('|')));
+
+  // 병원명이 우리 회사인 경우 삭제
+  const hospitalIdx = header.findIndex(col => col.toString().includes('병원명'));
+  if (hospitalIdx !== -1) {
+    newRows = newRows.filter(row => row[hospitalIdx].toString() !== '엠서클');
+  }
+
+  if (newRows.length === 0) {
+    Logger.log('새로운 행이 없습니다.');
+    return;
+  }
+
+  // 3. 새 파일 생성 및 데이터 입력
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd');
+  const newFileName = `건강습관 3주 챌린지 N차 당첨자 리스트_${today}_${newRows.length}명_보고용`;
+  const newSheet = SpreadsheetApp.create(newFileName);
+  const sheet = newSheet.getActiveSheet();
+  sheet.setName('sheet1');
+
+  sheet.appendRow(header);
+
+  // 전화번호가 두 번째 열 (index 1)일 경우, 앞에 0 보존
+  newRows.forEach(row => {
+    if (typeof row[1] === 'number') {
+      row[1] = "'" + row[1].toString(); // 0이 사라지지 않도록 작은따옴표
+    } else if (typeof row[1] === 'string' && !row[1].startsWith("'")) {
+      row[1] = "'" + row[1];
+    }
+    sheet.appendRow(row);
+  });
+
+  // 4. 파일을 지정 폴더로 이동
+  const newFile = DriveApp.getFileById(newSheet.getId());
+  folder.addFile(newFile);
+  DriveApp.getRootFolder().removeFile(newFile); // 루트에서 제거
+
+  Logger.log(`✅ 슬랙 보고용 스프레드시트 생성 완료: ${newFileName}`);
+
+    // 5. 비즈콘용 스프레드시트 생성
+  const bizconFileName = `건강습관 3주 챌린지 N차 당첨자 리스트_${today}_${newRows.length}명_비즈콘`;
+  const bizSheet = SpreadsheetApp.create(bizconFileName).getActiveSheet();
+  sheet.setName('sheet1');
+
+  // 병합 및 텍스트 작성
+  bizSheet.getRange('A1:B1').merge();
+  bizSheet.getRange('A1').setValue('텍스트');
+
+  // 헤더
+  bizSheet.getRange('A2').setValue('휴대폰 번호');
+  bizSheet.getRange('B2').setValue('이름');
+
+  // 데이터 입력 (전화번호가 row[1], 이름이 row[0])
+  newRows.forEach((row, i) => {
+    let phone = row[1];
+    if (typeof phone === 'number') {
+      phone = "'" + phone.toString();
+    } else if (typeof phone === 'string' && !phone.startsWith("'")) {
+      phone = "'" + phone;
+    }
+    bizSheet.getRange(i + 3, 1).setValue(phone); // A열 (휴대폰 번호)
+    bizSheet.getRange(i + 3, 2).setValue(row[0]); // B열 (이름)
+  });
+
+  // 비즈콘 파일도 폴더로 이동
+  const bizFile = DriveApp.getFileById(bizSheet.getParent().getId());
+  folder.addFile(bizFile);
+  DriveApp.getRootFolder().removeFile(bizFile);
+
+  Logger.log(`✅ 비즈콘용 스프레드시트 생성 완료: ${bizconFileName}`);
+} 
+
+function readSheetData(file) {
+  const ss = SpreadsheetApp.open(file);
+  const sheet = ss.getSheets()[0];
+  return sheet.getDataRange().getValues();
+}
